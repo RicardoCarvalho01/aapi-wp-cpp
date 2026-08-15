@@ -1,0 +1,76 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 22,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "host-common",
+            "hidden": true,
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "CMAKE_BUILD_TYPE": "Debug",
+                "BUILD_LINUX_DRIVERS": "OFF"
+            }
+        },
+        {
+            "name": "Debug-host",
+            "displayName": "Debug - Host",
+            "inherits": "host-common",
+            "binaryDir": "${sourceDir}/build/host-debug"
+        },
+        {
+            "name": "target-common",
+            "hidden": true,
+            "generator": "Ninja",
+            "toolchainFile": "${sourceDir}/buildroot/cmake/buildroot-aarch64.cmake",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "PKG_CONFIG_EXECUTABLE": "/home/aapiwp/buildroot/output/host/bin/pkg-config",
+                "CMAKE_BUILD_TYPE": "Debug",
+                "BUILD_LINUX_DRIVERS": "ON"
+            }
+        },
+        {
+            "name": "Debug-target",
+            "displayName": "Debug - AArch64 Target",
+            "inherits": "target-common",
+            "binaryDir": "${sourceDir}/build/target-debug"
+        },
+        {
+            "name": "Release-target",
+            "displayName": "Release - AArch64 Target",
+            "inherits": "target-common",
+            "binaryDir": "${sourceDir}/build/target-release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "host-debug",
+            "configurePreset": "Debug-host"
+        },
+        {
+            "name": "target-debug",
+            "configurePreset": "Debug-target"
+        },
+        {
+            "name": "target-release",
+            "configurePreset": "Release-target"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "host-debug",
+            "configurePreset": "Debug-host",
+            "output": {
+                "outputOnFailure": true
+            }
+        }
+    ]
+}
