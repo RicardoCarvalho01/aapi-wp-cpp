@@ -1,0 +1,5 @@
+menu "AAPIWP packages"
+
+source "$BR2_EXTERNAL_AAPIWP_PATH/package/aapiwp/Config.in"
+
+endmenu
