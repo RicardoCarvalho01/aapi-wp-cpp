@@ -3,83 +3,176 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+#include <vector>
+
+#include <chrono>
+#include <thread>
+
+#include "RecordingServices.hpp"
+
 using namespace aa::core;
 using aa::session::Session;
+using aa::test::RecordingServices;
 
-TEST(SessionTest, StartsInDisconnectedState)
+namespace
 {
-    Session session;
 
-    EXPECT_EQ(session.currentState(), &session.disconnectedState());
+void ticks(Session& session, int n)
+{
+    for (int i = 0; i < n; ++i)
+    {
+        session.encodeFSM();
+    }
 }
 
-TEST(SessionTest, BleConnectedEventEndsUpInWaitingWifiState)
+// Raises an event and gives the FSM enough ticks to consume it, run the
+// transient Start* state it leads to, and settle in the next waiting state.
+void raise(Session& session, EventFlag flag)
 {
-    Session session;
-
-    session.dispatch(BleConnectedEvent{});
-
-    // DisconnectedState transitions to StartWifiState, but StartWifiState
-    // is transient: its onEnter() kicks off the wifi connection and
-    // immediately self-transitions to WaitingWifiState.
-    EXPECT_EQ(session.currentState(), &session.waitingWifiState());
+    session.events().set(flag);
+    ticks(session, 3);
 }
 
-TEST(SessionTest, UnhandledEventInDisconnectedStateIsIgnored)
+void runHandshake(Session& session)
 {
-    Session session;
-
-    session.dispatch(WifiConnectedEvent{});
-
-    EXPECT_EQ(session.currentState(), &session.disconnectedState());
+    raise(session, EventFlag::BleConnected);
+    raise(session, EventFlag::WifiConnected);
+    raise(session, EventFlag::TransportReady);
+    raise(session, EventFlag::PairingRequest);
+    raise(session, EventFlag::PairingCompleted);
+    raise(session, EventFlag::ServicesReady);
 }
 
-TEST(SessionTest, FullHandshakeEndsUpInRunningState)
+} // namespace
+
+TEST(SessionTest, StartsInDisconnectedStateAndTouchesNothing)
 {
-    Session session;
+    RecordingServices services;
+    Session session(services);
 
-    // Walks the entire happy path: Ble -> Wifi -> Transport -> Protocol
-    // -> Authentication -> Services -> Running. Each Start*State is
-    // transient and self-transitions to the matching Waiting*State,
-    // which is why only one dispatch() per real-world signal is needed.
-    session.dispatch(BleConnectedEvent{});
-    session.dispatch(WifiConnectedEvent{});
-    session.dispatch(TransportReadyEvent{});
-    session.dispatch(PairingRequestEvent{});
-    session.dispatch(PairingCompletedEvent{});
-    session.dispatch(ServicesReadyEvent{});
+    ticks(session, 10);
 
-    EXPECT_EQ(session.currentState(), &session.runningState());
+    EXPECT_EQ(session.state(), StateId::Disconnected);
+    EXPECT_TRUE(services.calls.empty());
 }
 
-TEST(SessionTest, DisconnectMidHandshakeRecoversBackToDisconnectedState)
+TEST(SessionTest, ExposesTheInjectedServices)
 {
-    Session session;
+    RecordingServices services;
+    Session session(services);
 
-    session.dispatch(BleConnectedEvent{});
-    session.dispatch(WifiConnectedEvent{});
-    session.dispatch(TransportReadyEvent{});
-
-    // A BLE drop partway through the handshake should send the session
-    // through RecoveryState and back to square one, not leave it stuck.
-    session.dispatch(BleDisconnectedEvent{});
-
-    EXPECT_EQ(session.currentState(), &session.disconnectedState());
+    EXPECT_EQ(&session.services(), &services);
 }
 
-TEST(SessionTest, ErrorEventWhileRunningRecoversBackToDisconnectedState)
+TEST(SessionTest, IrrelevantEventInDisconnectedStateIsDropped)
 {
-    Session session;
+    RecordingServices services;
+    Session session(services);
 
-    session.dispatch(BleConnectedEvent{});
-    session.dispatch(WifiConnectedEvent{});
-    session.dispatch(TransportReadyEvent{});
-    session.dispatch(PairingRequestEvent{});
-    session.dispatch(PairingCompletedEvent{});
-    session.dispatch(ServicesReadyEvent{});
-    ASSERT_EQ(session.currentState(), &session.runningState());
+    session.events().set(EventFlag::WifiConnected);
+    ticks(session, 1);
 
-    session.dispatch(ErrorEvent{});
+    EXPECT_EQ(session.state(), StateId::Disconnected);
+    EXPECT_EQ(session.events().pending(), 0u);
 
-    EXPECT_EQ(session.currentState(), &session.disconnectedState());
+    // ...and it must not fire later, once the wifi is actually awaited.
+    raise(session, EventFlag::BleConnected);
+    ASSERT_EQ(session.state(), StateId::WaitingWifi);
+    ticks(session, 5);
+    EXPECT_EQ(session.state(), StateId::WaitingWifi);
+}
+
+TEST(SessionTest, EachStepMovesOneStateAtATime)
+{
+    RecordingServices services;
+    Session session(services);
+
+    session.events().set(EventFlag::BleConnected);
+
+    session.encodeFSM();
+    EXPECT_EQ(session.state(), StateId::StartWifi);
+
+    session.encodeFSM();
+    EXPECT_EQ(session.state(), StateId::WaitingWifi);
+    EXPECT_EQ(services.calls, (std::vector<std::string>{"wifi.start", "wifi.connect"}));
+}
+
+TEST(SessionTest, FullHandshakeEndsUpInRunningStateAndDrivesServicesInOrder)
+{
+    RecordingServices services;
+    Session session(services);
+
+    runHandshake(session);
+
+    EXPECT_EQ(session.state(), StateId::Running);
+    EXPECT_EQ(services.calls,
+              (std::vector<std::string>{"wifi.start", "wifi.connect", "transport.open",
+                                        "protocol.start", "bluetooth.start", "bluetooth.pair"}));
+}
+
+TEST(SessionTest, DisconnectMidHandshakeRecoversBackToDisconnected)
+{
+    RecordingServices services;
+    Session session(services);
+
+    raise(session, EventFlag::BleConnected);
+    raise(session, EventFlag::WifiConnected);
+    raise(session, EventFlag::TransportReady);
+    services.calls.clear();
+
+    raise(session, EventFlag::BleDisconnected);
+
+    EXPECT_EQ(session.state(), StateId::Disconnected);
+    EXPECT_EQ(services.calls.front(), "bluetooth.unpair");
+    EXPECT_EQ(services.calls.back(), "wifi.stop");
+}
+
+TEST(SessionTest, ErrorWhileRunningRecoversAndCanHandshakeAgain)
+{
+    RecordingServices services;
+    Session session(services);
+
+    runHandshake(session);
+    ASSERT_EQ(session.state(), StateId::Running);
+
+    raise(session, EventFlag::Error);
+    EXPECT_EQ(session.state(), StateId::Disconnected);
+
+    runHandshake(session);
+    EXPECT_EQ(session.state(), StateId::Running);
+}
+
+TEST(SessionTest, RunsOnItsOwnThreadAndReactsToEventsRaisedFromAnotherThread)
+{
+    using namespace std::chrono_literals;
+
+    RecordingServices services;
+    Session session(services);
+    std::jthread fsm([&session](std::stop_token stop) { session.run(stop, 1ms); });
+
+    auto const waitFor = [&session](StateId target)
+    {
+        auto const deadline = std::chrono::steady_clock::now() + 2s;
+        while (session.state() != target && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(1ms);
+        }
+        return session.state() == target;
+    };
+
+    session.events().set(EventFlag::BleConnected);
+    ASSERT_TRUE(waitFor(StateId::WaitingWifi));
+
+    session.events().set(EventFlag::WifiConnected);
+    ASSERT_TRUE(waitFor(StateId::WaitingTransport));
+
+    fsm.request_stop();
+    fsm.join();
+
+    // Stopped for real: no more steps, state frozen.
+    auto const frozen = session.state();
+    session.events().set(EventFlag::TransportReady);
+    std::this_thread::sleep_for(20ms);
+    EXPECT_EQ(session.state(), frozen);
 }

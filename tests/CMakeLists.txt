@@ -21,16 +21,10 @@ set_directory_properties(
 )
 
 add_executable(aapiwp-tests
-    core/EventQueueTest.cpp
-    core/EventDispatcherTest.cpp
-    core/StateMachineTest.cpp
+    core/EventFlagsTest.cpp
+    core/EncodeFsmTest.cpp
 
-    session/DisconnectedStateTest.cpp
-    session/StartWifiStateTest.cpp
-    session/WaitingProtocolStateTest.cpp
-    session/WaitingServicesStateTest.cpp
-    session/RunningStateTest.cpp
-    session/RecoveryStateTest.cpp
+    session/SessionTableTest.cpp
     session/SessionTest.cpp
 
     drivers/ble/DummyBleAdapterTest.cpp

@@ -4,8 +4,6 @@
 #include <gtest/gtest.h>
 
 #include "core/events/EventQueue.hpp"
-#include "core/state/IStateContext.hpp"
-#include "core/state/State.hpp"
 #include "core/state/StateMachine.hpp"
 
 using namespace aa::core;
@@ -13,99 +11,81 @@ using namespace aa::core;
 namespace
 {
 
-class SpyState : public State
+struct Counters
 {
-public:
-    int bleConnectedCount{0};
-    int wifiConnectedCount{0};
-
-    void onEvent(StateMachine&, const BleConnectedEvent&) override { bleConnectedCount++; }
-
-    void onEvent(StateMachine&, const WifiConnectedEvent&) override { wifiConnectedCount++; }
+    int ble{0};
+    int wifi{0};
 };
 
-class SingleStateContext final : public IStateContext
+Transition countBle(Counters& c, const Event&)
 {
-public:
-    SpyState state;
+    c.ble++;
+    return Transition::stay();
+}
 
-    State& disconnectedState() override { return state; }
+Transition countWifi(Counters& c, const Event&)
+{
+    c.wifi++;
+    return Transition::stay();
+}
 
-    State& startWifiState() override { return state; }
+StateTable<Counters> makeTable()
+{
+    StateTable<Counters> table{};
 
-    State& waitingWifiState() override { return state; }
+    table[toIndex(StateId::Disconnected)].on[EventIndex<BleConnectedEvent>] = &countBle;
+    table[toIndex(StateId::Disconnected)].on[EventIndex<WifiConnectedEvent>] = &countWifi;
 
-    State& startTransportState() override { return state; }
+    return table;
+}
 
-    State& waitingTransportState() override { return state; }
+struct Fixture
+{
+    Counters counters;
+    StateTable<Counters> table{makeTable()};
+    StateMachine<Counters> machine{counters, table};
+    EventQueue queue;
+    EventDispatcher<StateMachine<Counters>> dispatcher{queue, machine};
 
-    State& startProtocolState() override { return state; }
-
-    State& waitingProtocolState() override { return state; }
-
-    State& startAuthenticationState() override { return state; }
-
-    State& waitingAuthenticationState() override { return state; }
-
-    State& startServicesState() override { return state; }
-
-    State& waitingServicesState() override { return state; }
-
-    State& runningState() override { return state; }
-
-    State& recoveryState() override { return state; }
+    Fixture() { machine.start(StateId::Disconnected); }
 };
 
 } // namespace
 
 TEST(EventDispatcherTest, DispatchProcessesOneQueuedEvent)
 {
-    SingleStateContext context;
-    StateMachine machine{context};
-    machine.setInitialState(context.state);
+    Fixture f;
+    f.queue.push(BleConnectedEvent{});
+    f.queue.push(WifiConnectedEvent{});
 
-    EventQueue queue;
-    queue.push(BleConnectedEvent{});
-    queue.push(WifiConnectedEvent{});
+    f.dispatcher.dispatch();
 
-    EventDispatcher dispatcher{queue, machine};
-    dispatcher.dispatch();
-
-    EXPECT_EQ(context.state.bleConnectedCount, 1);
-    EXPECT_EQ(context.state.wifiConnectedCount, 0);
-    EXPECT_EQ(queue.size(), 1u);
+    EXPECT_EQ(f.counters.ble, 1);
+    EXPECT_EQ(f.counters.wifi, 0);
+    EXPECT_EQ(f.queue.size(), 1u);
 }
 
 TEST(EventDispatcherTest, DispatchAllDrainsTheWholeQueue)
 {
-    SingleStateContext context;
-    StateMachine machine{context};
-    machine.setInitialState(context.state);
+    Fixture f;
+    f.queue.push(BleConnectedEvent{});
+    f.queue.push(WifiConnectedEvent{});
+    f.queue.push(BleConnectedEvent{});
 
-    EventQueue queue;
-    queue.push(BleConnectedEvent{});
-    queue.push(WifiConnectedEvent{});
-    queue.push(BleConnectedEvent{});
+    f.dispatcher.dispatchAll();
 
-    EventDispatcher dispatcher{queue, machine};
-    dispatcher.dispatchAll();
-
-    EXPECT_EQ(context.state.bleConnectedCount, 2);
-    EXPECT_EQ(context.state.wifiConnectedCount, 1);
-    EXPECT_TRUE(queue.empty());
+    EXPECT_EQ(f.counters.ble, 2);
+    EXPECT_EQ(f.counters.wifi, 1);
+    EXPECT_TRUE(f.queue.empty());
 }
 
 TEST(EventDispatcherTest, DispatchOnEmptyQueueIsANoOp)
 {
-    SingleStateContext context;
-    StateMachine machine{context};
-    machine.setInitialState(context.state);
+    Fixture f;
 
-    EventQueue queue;
-    EventDispatcher dispatcher{queue, machine};
+    f.dispatcher.dispatch();
+    f.dispatcher.dispatchAll();
 
-    dispatcher.dispatch();
-    dispatcher.dispatchAll();
-
-    EXPECT_EQ(context.state.bleConnectedCount, 0);
+    EXPECT_EQ(f.counters.ble, 0);
+    EXPECT_EQ(f.counters.wifi, 0);
 }

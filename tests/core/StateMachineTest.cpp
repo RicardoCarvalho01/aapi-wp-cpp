@@ -3,124 +3,183 @@
 
 #include <gtest/gtest.h>
 
-#include "core/state/IStateContext.hpp"
-#include "core/state/State.hpp"
+#include <string>
+#include <vector>
+
+#include "core/state/StateTable.hpp"
 
 using namespace aa::core;
 
 namespace
 {
 
-class SpyState : public State
+// The machine is generic over its context; here the context is just a log.
+struct Log
 {
-public:
-    int enterCount{0};
-    int exitCount{0};
-    int bleConnectedCount{0};
-
-    void onEnter(StateMachine&) override { enterCount++; }
-
-    void onExit(StateMachine&) override { exitCount++; }
-
-    void onEvent(StateMachine&, const BleConnectedEvent&) override { bleConnectedCount++; }
+    std::vector<std::string> entries;
 };
 
-// None of the tests below exercise machine.context(), so this stub only
-// needs to satisfy the IStateContext interface, not do anything useful.
-class UnusedStateContext : public IStateContext
+using Table = StateTable<Log>;
+
+void logEnterA(Log& log) { log.entries.emplace_back("enter A"); }
+
+Transition enterA(Log& log)
 {
-public:
-    State& disconnectedState() override { return unreachable(); }
+    logEnterA(log);
+    return Transition::stay();
+}
 
-    State& startWifiState() override { return unreachable(); }
+void exitA(Log& log) { log.entries.emplace_back("exit A"); }
 
-    State& waitingWifiState() override { return unreachable(); }
+Transition enterB(Log& log)
+{
+    log.entries.emplace_back("enter B");
+    return Transition::stay();
+}
 
-    State& startTransportState() override { return unreachable(); }
+// Transient: logs and hands off to C immediately.
+Transition enterTransient(Log& log)
+{
+    log.entries.emplace_back("enter T");
+    return Transition::go(StateId::Running);
+}
 
-    State& waitingTransportState() override { return unreachable(); }
+Transition enterC(Log& log)
+{
+    log.entries.emplace_back("enter C");
+    return Transition::stay();
+}
 
-    State& startProtocolState() override { return unreachable(); }
+Transition goToB(Log& log, const Event&)
+{
+    log.entries.emplace_back("handler goToB");
+    return Transition::go(StateId::StartWifi);
+}
 
-    State& waitingProtocolState() override { return unreachable(); }
+Transition goToTransient(Log&, const Event&) { return Transition::go(StateId::WaitingWifi); }
 
-    State& startAuthenticationState() override { return unreachable(); }
+Transition stayPut(Log& log, const Event&)
+{
+    log.entries.emplace_back("handler stay");
+    return Transition::stay();
+}
 
-    State& waitingAuthenticationState() override { return unreachable(); }
+// States are just labels here: A = Disconnected, B = StartWifi,
+// T = WaitingWifi (transient), C = Running.
+Table makeTable()
+{
+    Table table{};
 
-    State& startServicesState() override { return unreachable(); }
+    table[toIndex(StateId::Disconnected)].onEnter = &enterA;
+    table[toIndex(StateId::Disconnected)].onExit = &exitA;
+    table[toIndex(StateId::Disconnected)].on[EventIndex<BleConnectedEvent>] = &goToB;
+    table[toIndex(StateId::Disconnected)].on[EventIndex<WifiConnectedEvent>] = &goToTransient;
+    table[toIndex(StateId::Disconnected)].on[EventIndex<ErrorEvent>] = &stayPut;
 
-    State& waitingServicesState() override { return unreachable(); }
+    table[toIndex(StateId::StartWifi)].onEnter = &enterB;
 
-    State& runningState() override { return unreachable(); }
+    table[toIndex(StateId::WaitingWifi)].onEnter = &enterTransient;
 
-    State& recoveryState() override { return unreachable(); }
+    table[toIndex(StateId::Running)].onEnter = &enterC;
 
-private:
-    State& unreachable()
-    {
-        ADD_FAILURE() << "IStateContext should not be used in this test";
-        static State dummy;
-        return dummy;
-    }
-};
+    return table;
+}
 
 } // namespace
 
-TEST(StateMachineTest, HasNoCurrentStateBeforeInitialization)
+TEST(StateMachineTest, HasNoCurrentStateBeforeStart)
 {
-    UnusedStateContext context;
-    StateMachine machine{context};
+    Log log;
+    Table const table = makeTable();
+    StateMachine<Log> machine{log, table};
 
-    EXPECT_EQ(machine.currentState(), nullptr);
+    EXPECT_FALSE(machine.currentState().has_value());
 }
 
-TEST(StateMachineTest, SetInitialStateCallsOnEnter)
+TEST(StateMachineTest, StartMakesStateCurrentAndRunsOnEnterButNoOnExit)
 {
-    UnusedStateContext context;
-    StateMachine machine{context};
-    SpyState state;
+    Log log;
+    Table const table = makeTable();
+    StateMachine<Log> machine{log, table};
 
-    machine.setInitialState(state);
+    machine.start(StateId::Disconnected);
 
-    EXPECT_EQ(machine.currentState(), &state);
-    EXPECT_EQ(state.enterCount, 1);
+    EXPECT_EQ(machine.currentState(), StateId::Disconnected);
+    EXPECT_EQ(log.entries, std::vector<std::string>{"enter A"});
 }
 
-TEST(StateMachineTest, TransitionToCallsExitOnOldStateAndEnterOnNewState)
+TEST(StateMachineTest, TransitionRunsExitOfOldThenEnterOfNew)
 {
-    UnusedStateContext context;
-    StateMachine machine{context};
-    SpyState from;
-    SpyState to;
+    Log log;
+    Table const table = makeTable();
+    StateMachine<Log> machine{log, table};
+    machine.start(StateId::Disconnected);
+    log.entries.clear();
 
-    machine.setInitialState(from);
-    machine.transitionTo(to);
-
-    EXPECT_EQ(from.exitCount, 1);
-    EXPECT_EQ(to.enterCount, 1);
-    EXPECT_EQ(machine.currentState(), &to);
-}
-
-TEST(StateMachineTest, DispatchRoutesEventToCurrentStateOnEventOverload)
-{
-    UnusedStateContext context;
-    StateMachine machine{context};
-    SpyState state;
-
-    machine.setInitialState(state);
     machine.dispatch(BleConnectedEvent{});
 
-    EXPECT_EQ(state.bleConnectedCount, 1);
+    EXPECT_EQ(machine.currentState(), StateId::StartWifi);
+    EXPECT_EQ(log.entries, (std::vector<std::string>{"handler goToB", "exit A", "enter B"}));
 }
 
-TEST(StateMachineTest, DispatchBeforeInitialStateIsANoOp)
+TEST(StateMachineTest, TransientStateFollowsTransitionReturnedByOnEnter)
 {
-    UnusedStateContext context;
-    StateMachine machine{context};
+    Log log;
+    Table const table = makeTable();
+    StateMachine<Log> machine{log, table};
+    machine.start(StateId::Disconnected);
+    log.entries.clear();
 
-    // must not crash even though no state has been set yet
+    machine.dispatch(WifiConnectedEvent{});
+
+    EXPECT_EQ(machine.currentState(), StateId::Running);
+    EXPECT_EQ(log.entries, (std::vector<std::string>{"exit A", "enter T", "enter C"}));
+}
+
+TEST(StateMachineTest, HandlerReturningStayDoesNotTouchEnterOrExit)
+{
+    Log log;
+    Table const table = makeTable();
+    StateMachine<Log> machine{log, table};
+    machine.start(StateId::Disconnected);
+    log.entries.clear();
+
+    machine.dispatch(ErrorEvent{});
+
+    EXPECT_EQ(machine.currentState(), StateId::Disconnected);
+    EXPECT_EQ(log.entries, std::vector<std::string>{"handler stay"});
+}
+
+TEST(StateMachineTest, EventWithNoHandlerInCurrentStateIsIgnored)
+{
+    Log log;
+    Table const table = makeTable();
+    StateMachine<Log> machine{log, table};
+    machine.start(StateId::Disconnected);
+    log.entries.clear();
+
+    machine.dispatch(ServicesReadyEvent{});
+
+    EXPECT_EQ(machine.currentState(), StateId::Disconnected);
+    EXPECT_TRUE(log.entries.empty());
+}
+
+TEST(StateMachineTest, DispatchBeforeStartIsANoOp)
+{
+    Log log;
+    Table const table = makeTable();
+    StateMachine<Log> machine{log, table};
+
     machine.dispatch(BleConnectedEvent{});
 
-    EXPECT_EQ(machine.currentState(), nullptr);
+    EXPECT_FALSE(machine.currentState().has_value());
+    EXPECT_TRUE(log.entries.empty());
+}
+
+TEST(EventIndexTest, MatchesVariantIndexForEveryAlternative)
+{
+    EXPECT_EQ(Event{BleConnectedEvent{}}.index(), EventIndex<BleConnectedEvent>);
+    EXPECT_EQ(Event{WifiConnectedEvent{}}.index(), EventIndex<WifiConnectedEvent>);
+    EXPECT_EQ(Event{ErrorEvent{}}.index(), EventIndex<ErrorEvent>);
+    EXPECT_EQ(EventIndex<ErrorEvent>, EventCount - 1);
 }

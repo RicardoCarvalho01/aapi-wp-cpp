@@ -2,10 +2,9 @@
 
 #include <gtest/gtest.h>
 
-#include "core/events/BleConnectedEvent.hpp"
-#include "core/events/BleDisconnectedEvent.hpp"
-#include "core/events/Event.hpp"
-#include "core/events/EventQueue.hpp"
+#include "core/events/EventFlags.hpp"
+
+using aa::core::EventFlag;
 
 namespace
 {
@@ -13,8 +12,8 @@ namespace
 class DummyBleAdapterTest : public ::testing::Test
 {
 protected:
-    aa::core::EventQueue queue;
-    aa::drivers::ble::DummyBleAdapter adapter{queue};
+    aa::core::EventFlags events;
+    aa::drivers::ble::DummyBleAdapter adapter{events};
 };
 
 } // namespace
@@ -60,11 +59,8 @@ TEST_F(DummyBleAdapterTest, ConnectionProducesBleConnectedEvent)
 
     adapter.simulateConnection();
 
-    ASSERT_FALSE(queue.empty());
-
-    const aa::core::Event event = queue.pop();
-
-    ASSERT_TRUE(std::holds_alternative<aa::core::BleConnectedEvent>(event));
+    EXPECT_TRUE(events.consume(EventFlag::BleConnected));
+    EXPECT_EQ(events.pending(), 0u);
     EXPECT_TRUE(adapter.connected());
     EXPECT_FALSE(adapter.advertising());
 }
@@ -75,16 +71,12 @@ TEST_F(DummyBleAdapterTest, DisconnectionProducesBleDisconnectedEvent)
     ASSERT_TRUE(adapter.startAdvertising());
 
     adapter.simulateConnection();
-    ASSERT_FALSE(queue.empty());
-    (void) queue.pop();
+    ASSERT_TRUE(events.consume(EventFlag::BleConnected));
 
     adapter.simulateDisconnection();
 
-    ASSERT_FALSE(queue.empty());
-
-    const aa::core::Event event = queue.pop();
-
-    ASSERT_TRUE(std::holds_alternative<aa::core::BleDisconnectedEvent>(event));
+    EXPECT_TRUE(events.consume(EventFlag::BleDisconnected));
+    EXPECT_EQ(events.pending(), 0u);
     EXPECT_FALSE(adapter.connected());
 }
 
@@ -95,7 +87,7 @@ TEST_F(DummyBleAdapterTest, ConnectionBeforeAdvertisingIsIgnored)
     adapter.simulateConnection();
 
     EXPECT_FALSE(adapter.connected());
-    EXPECT_TRUE(queue.empty());
+    EXPECT_EQ(events.pending(), 0u);
 }
 
 TEST_F(DummyBleAdapterTest, DuplicateConnectionIsIgnored)
@@ -104,13 +96,11 @@ TEST_F(DummyBleAdapterTest, DuplicateConnectionIsIgnored)
     ASSERT_TRUE(adapter.startAdvertising());
 
     adapter.simulateConnection();
+    ASSERT_TRUE(events.consume(EventFlag::BleConnected));
+
     adapter.simulateConnection();
 
-    ASSERT_FALSE(queue.empty());
-
-    (void) queue.pop();
-
-    EXPECT_TRUE(queue.empty());
+    EXPECT_EQ(events.pending(), 0u);
 }
 
 TEST_F(DummyBleAdapterTest, DuplicateDisconnectionIsIgnored)
@@ -119,18 +109,14 @@ TEST_F(DummyBleAdapterTest, DuplicateDisconnectionIsIgnored)
     ASSERT_TRUE(adapter.startAdvertising());
 
     adapter.simulateConnection();
-
-    ASSERT_FALSE(queue.empty());
-    (void) queue.pop();
+    ASSERT_TRUE(events.consume(EventFlag::BleConnected));
 
     adapter.simulateDisconnection();
+    ASSERT_TRUE(events.consume(EventFlag::BleDisconnected));
+
     adapter.simulateDisconnection();
 
-    ASSERT_FALSE(queue.empty());
-
-    (void) queue.pop();
-
-    EXPECT_TRUE(queue.empty());
+    EXPECT_EQ(events.pending(), 0u);
 }
 
 TEST_F(DummyBleAdapterTest, StopAdvertisingDoesNotDisconnect)
@@ -141,7 +127,7 @@ TEST_F(DummyBleAdapterTest, StopAdvertisingDoesNotDisconnect)
     adapter.stopAdvertising();
 
     EXPECT_FALSE(adapter.connected());
-    EXPECT_TRUE(queue.empty());
+    EXPECT_EQ(events.pending(), 0u);
 }
 
 TEST_F(DummyBleAdapterTest, PollDoesNotGenerateEvents)
@@ -151,5 +137,5 @@ TEST_F(DummyBleAdapterTest, PollDoesNotGenerateEvents)
 
     adapter.poll();
 
-    EXPECT_TRUE(queue.empty());
+    EXPECT_EQ(events.pending(), 0u);
 }
