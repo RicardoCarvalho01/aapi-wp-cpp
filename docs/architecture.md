@@ -38,10 +38,14 @@ The Pi is **not** intended to replace the car's Android Auto head unit. It is th
 
 `src/core` contains generic event and state-machine mechanics:
 
-- `Event` types represent asynchronous stimuli;
-- `EventQueue` stores events;
-- `EventDispatcher` drains events;
-- `StateMachine` owns the current state and transitions.
+- `EventFlag` / `EventFlags` are the events: a lock-free bit set. Anyone raises a flag with
+  `set()`; the FSM `consume()`s it. There is no queue and no dispatcher;
+- `StateTable<Context>` is the machine: one row per `StateId` with an `action` (function
+  pointer, run once per tick, never blocking), an optional automatic successor `then`
+  (transient states) and an `accepts` mask (events that make sense there; the rest are
+  dropped each tick);
+- `encodeFSM(table, current, context, events)` is one non-blocking step: returns the next state;
+- `Session::run(stop_token)` is the FSM thread's body: `encodeFSM()`, sleep until the next tick, repeat.
 
 This layer should know nothing about Android Auto, Bluetooth, Linux, or Raspberry Pi hardware.
 

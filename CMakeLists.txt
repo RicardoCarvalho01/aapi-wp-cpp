@@ -12,6 +12,8 @@ include(CompilerOptions)
 include(Warnings)
 include(Sanitizers)
 
+find_package(Threads REQUIRED)
+
 option(BUILD_TESTING "Build unit tests" ON)
 option(BUILD_LINUX_DRIVERS "Build Linux/DBus drivers" OFF)
 

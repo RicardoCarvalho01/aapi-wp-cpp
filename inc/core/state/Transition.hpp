@@ -43,7 +43,7 @@ class Transition
     private:
         bool valid_{false};
 
-        StateId target_{StateId::Idle};
+        StateId target_{StateId::Disconnected};
 };
 
 }

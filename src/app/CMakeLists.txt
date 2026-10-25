@@ -16,6 +16,11 @@ if(BUILD_LINUX_DRIVERS)
         PRIVATE
             aapiwp-linux-drivers
     )
+
+    target_compile_definitions(aapiwp
+        PRIVATE
+            AAPIWP_LINUX_DRIVERS
+    )
 endif()
 
 install(
