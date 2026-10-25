@@ -9,7 +9,7 @@ namespace aa::drivers::ble
 class LinuxBleAdapter final : public BleAdapter
 {
     public:
-        explicit LinuxBleAdapter(aa::core::EventQueue &eventQueue);
+        explicit LinuxBleAdapter(aa::core::EventFlags &events) noexcept;
 
         ~LinuxBleAdapter() override;
 

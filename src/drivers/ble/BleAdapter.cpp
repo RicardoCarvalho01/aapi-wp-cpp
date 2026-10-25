@@ -1,17 +1,15 @@
 
 #include "drivers/ble/BleAdapter.hpp"
 
-#include <utility>
-
 namespace aa::drivers::ble
 {
 
-BleAdapter::BleAdapter(aa::core::EventQueue& eventQueue) : eventQueue_(eventQueue)
+BleAdapter::BleAdapter(aa::core::EventFlags& events) noexcept : events_(events)
 {}
 
-void BleAdapter::enqueue(aa::core::Event event)
+void BleAdapter::raise(aa::core::EventFlag flag) noexcept
 {
-    eventQueue_.push(std::move(event));
+    events_.set(flag);
 }
 
 } // namespace aa::drivers::ble

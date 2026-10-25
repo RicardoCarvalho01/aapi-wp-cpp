@@ -1,115 +1,54 @@
 
 #include "session/Session.hpp"
 
-#include <utility>
+#include <thread>
+
+#include "core/state/EncodeFsm.hpp"
 
 namespace aa::session
 {
 
-Session::Session() : machine_(*this), dispatcher_(eventQueue_, machine_)
-{
-    startWifi_.setServices(&services_);
-    startTransport_.setServices(&services_);
-    startProtocol_.setServices(&services_);
-    startAuthentication_.setServices(&services_);
-    recovery_.setServices(&services_);
+Session::Session(aa::services::IServices& services) : context_{services}
+{}
 
-    machine_.setInitialState(disconnected_);
+void Session::encodeFSM()
+{
+    state_ = aa::core::encodeFSM(sessionTable(), state_.load(), context_, events_);
 }
 
-void Session::dispatch(const aa::core::Event& event)
+void Session::run(std::stop_token stop, std::chrono::milliseconds period)
 {
-    machine_.dispatch(event);
+    auto next = std::chrono::steady_clock::now();
+
+    while (!stop.stop_requested())
+    {
+        encodeFSM();
+
+        next += period;
+
+        if (auto const now = std::chrono::steady_clock::now(); next < now)
+        {
+            // Overran: skip the ticks we missed, keep the grid.
+            next += period * ((now - next) / period + 1);
+        }
+
+        std::this_thread::sleep_until(next);
+    }
 }
 
-void Session::enqueue(aa::core::Event event)
+aa::core::EventFlags& Session::events() noexcept
 {
-    eventQueue_.push(std::move(event));
+    return events_;
 }
 
-void Session::pump()
+aa::core::StateId Session::state() const noexcept
 {
-    dispatcher_.dispatchAll();
-}
-
-aa::core::EventQueue& Session::eventQueue() noexcept
-{
-    return eventQueue_;
-}
-
-aa::core::State* Session::currentState() noexcept
-{
-    return machine_.currentState();
+    return state_;
 }
 
 aa::services::IServices& Session::services() noexcept
 {
-    return services_;
-}
-
-aa::core::State& Session::disconnectedState() noexcept
-{
-    return disconnected_;
-}
-
-aa::core::State& Session::startWifiState() noexcept
-{
-    return startWifi_;
-}
-
-aa::core::State& Session::waitingWifiState() noexcept
-{
-    return waitingWifi_;
-}
-
-aa::core::State& Session::startTransportState() noexcept
-{
-    return startTransport_;
-}
-
-aa::core::State& Session::waitingTransportState() noexcept
-{
-    return waitingTransport_;
-}
-
-aa::core::State& Session::startProtocolState() noexcept
-{
-    return startProtocol_;
-}
-
-aa::core::State& Session::waitingProtocolState() noexcept
-{
-    return waitingProtocol_;
-}
-
-aa::core::State& Session::startAuthenticationState() noexcept
-{
-    return startAuthentication_;
-}
-
-aa::core::State& Session::waitingAuthenticationState() noexcept
-{
-    return waitingAuthentication_;
-}
-
-aa::core::State& Session::startServicesState() noexcept
-{
-    return startServices_;
-}
-
-aa::core::State& Session::waitingServicesState() noexcept
-{
-    return waitingServices_;
-}
-
-aa::core::State& Session::runningState() noexcept
-{
-    return running_;
-}
-
-aa::core::State& Session::recoveryState() noexcept
-{
-    return recovery_;
+    return context_.services;
 }
 
 } // namespace aa::session

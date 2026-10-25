@@ -1,51 +1,126 @@
 #pragma once
 
+#include <cassert>
+#include <cstddef>
+#include <optional>
+
 #include "core/events/Event.hpp"
-#include "core/state/IStateContext.hpp"
-#include "core/state/State.hpp"
+#include "core/state/StateId.hpp"
+#include "core/state/StateTable.hpp"
+#include "core/state/Transition.hpp"
 
 
 namespace aa::core
 {
 
-// A minimal, context-driven state machine.
+// A table-driven state machine.
 //
-// It holds no notion of "all states" or a fixed state identifier: it only
-// ever tracks the *current* state, and states themselves decide where to go
-// next by pulling the target state out of the IStateContext (see
-// State::onEnter / State::onEvent implementations in aa::session).
+// The machine itself knows nothing about any particular state graph: it
+// only tracks the current StateId and looks up what to do in a StateTable
+// (a lookup table of function pointers, see StateTable.hpp). The table is
+// borrowed, not copied, so it can live in static storage (constexpr/ROM).
 //
-// This keeps individual states trivially testable in isolation (a state and
-// a MockStateContext are all a test needs) while Session wires the real
-// state graph together simply by implementing IStateContext.
+// `Context` is whatever the handlers need to do their work (drivers,
+// services, ...). The machine hands it to every handler untouched.
+template <typename Context>
 class StateMachine
 {
     public:
-        explicit StateMachine(IStateContext &context) noexcept;
+        using Table = StateTable<Context>;
 
-        // Sets the current state without going through transitionTo's
-        // onExit step (there is nothing to exit from yet) and calls the
-        // new state's onEnter. Transient states may immediately call
-        // transitionTo() again from within their own onEnter.
-        void setInitialState(State &initial);
+        StateMachine(Context &context, Table const &table) noexcept
+            : context_(context)
+            , table_(table)
+        { }
 
-        // Exits the current state (if any) and enters `next`.
-        void transitionTo(State &next);
+        // Makes `initial` the current state and runs its onEnter function
+        // (following any transitions it returns). There is no old state,
+        // so no onExit runs.
+        void start(StateId initial)
+        {
+            current_ = initial;
 
-        // Routes the event to the current state's matching onEvent
-        // overload. A no-op if no initial state has been set yet.
-        void dispatch(Event const &event);
+            apply(enterCurrent());
+        }
+
+        // Looks up the handler for (current state, event type) and runs it.
+        // Ignored if the machine has not been started or the table has no
+        // handler in that cell.
+        void dispatch(Event const &event)
+        {
+            if (!current_.has_value())
+            {
+                return;
+            }
+
+            auto const handler = table_[toIndex(*current_)].on[event.index()];
+
+            if (handler == nullptr)
+            {
+                return;
+            }
+
+            apply(handler(context_, event));
+        }
+
+        // Empty until start() has been called.
+        [[nodiscard]]
+        std::optional<StateId> currentState() const noexcept
+        {
+            return current_;
+        }
 
         [[nodiscard]]
-        State * currentState() const noexcept;
-
-        [[nodiscard]]
-        IStateContext & context() noexcept;
+        Context & context() noexcept
+        {
+            return context_;
+        }
 
     private:
-        IStateContext &context_;
+        // A chain of transient states can never legitimately be longer than
+        // the number of states; anything longer is a loop in the table.
+        static constexpr std::size_t MaxChain = StateCount;
 
-        State *currentState_{nullptr};
+        [[nodiscard]]
+        Transition enterCurrent()
+        {
+            auto const enter = table_[toIndex(*current_)].onEnter;
+
+            return enter != nullptr ? enter(context_) : Transition::stay();
+        }
+
+        // Performs the transition (exit old, enter new) and keeps following
+        // transitions returned by onEnter, so transient states chain
+        // iteratively instead of recursing.
+        void apply(Transition transition)
+        {
+            std::size_t hops = 0;
+
+            while (transition.valid())
+            {
+                if (hops++ >= MaxChain)
+                {
+                    assert(false && "transient state loop in state table");
+
+                    return;
+                }
+
+                if (auto const exit = table_[toIndex(*current_)].onExit; exit != nullptr)
+                {
+                    exit(context_);
+                }
+
+                current_ = transition.target();
+
+                transition = enterCurrent();
+            }
+        }
+
+        Context &context_;
+
+        Table const &table_;
+
+        std::optional<StateId> current_{};
 };
 
 }

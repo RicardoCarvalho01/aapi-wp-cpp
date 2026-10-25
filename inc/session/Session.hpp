@@ -1,126 +1,69 @@
 #pragma once
 
-#include "core/events/Event.hpp"
-#include "core/events/EventDispatcher.hpp"
-#include "core/events/EventQueue.hpp"
-#include "core/state/IStateContext.hpp"
-#include "core/state/StateMachine.hpp"
+#include <atomic>
+#include <chrono>
+#include <stop_token>
 
-#include "session/states/DisconnectedState.hpp"
-#include "session/states/RecoveryState.hpp"
-#include "session/states/RunningState.hpp"
-#include "session/states/StartAuthenticationState.hpp"
-#include "session/states/StartProtocolState.hpp"
-#include "session/states/StartServicesState.hpp"
-#include "session/states/StartWifiState.hpp"
-#include "session/states/WaitingAuthenticationState.hpp"
-#include "session/states/WaitingProtocolState.hpp"
-#include "session/states/WaitingServicesState.hpp"
-#include "session/states/WaitingTransportState.hpp"
-#include "session/states/WaitingWifiState.hpp"
-#include "session/states/StartTransportState.hpp"
+#include "core/events/EventFlags.hpp"
+#include "core/state/StateId.hpp"
+#include "services/IServices.hpp"
 
-#include "drivers/linux/LinuxServices.hpp"
+#include "session/SessionContext.hpp"
 
 
 namespace aa::session
 {
 
-// Owns the full Android Auto handshake state graph (13 states) and the set
-// of Linux-backed services (USB, wifi, bluetooth, transport, protocol,
-// timer, clock, logger) those states will eventually drive.
+// The main task: the Android Auto handshake FSM.
 //
-// Session is deliberately default-constructible: it owns everything it
-// needs, which keeps `Session session;` enough to get a working, fully
-// wired state machine (see tests/session/SessionTest.cpp).
-class Session final : public aa::core::IStateContext
+// There is no dispatcher and no queue. Drivers raise event flags with
+// events().set(...) from wherever they run. encodeFSM() runs the current
+// state's action once and moves to the next state; it never blocks. run() is
+// the main task loop: it calls encodeFSM() and sleeps, over and over.
+//
+// The services (USB, wifi, bluetooth, transport, protocol, ...) are
+// injected, so Session does not depend on any concrete driver. The services
+// object must outlive the Session.
+class Session final
 {
     public:
-        Session();
+        explicit Session(aa::services::IServices &services);
 
-        // Routes a single event to the state machine synchronously. Use
-        // this when the caller is already on the session's own thread of
-        // control (e.g. in a test).
-        void dispatch(aa::core::Event const &event);
+        Session(Session const &) = delete;
 
-        // Queues an event for later processing via pump(). This is the
-        // entry point for asynchronous producers (BLE callbacks, driver
-        // threads, ...) that don't run on the session's own thread.
-        void enqueue(aa::core::Event event);
+        Session & operator=(Session const &) = delete;
 
-        // Drains every event queued via enqueue() into the state machine.
-        // Call this once per iteration of the owning main loop.
-        void pump();
+        // One non-blocking step of the FSM: runs the action of the current
+        // state and updates the current state. Call it from a single
+        // thread only (normally via run()).
+        void encodeFSM();
 
+        // The main task loop: encodeFSM(), then sleep until the next tick,
+        // until a stop is requested. Ticks stay on a fixed grid (no drift);
+        // if an action overruns, the missed ticks are skipped. Stopping takes
+        // at most one period.
+        //
+        //   session.run(std::stop_token{});   // main follows the FSM
+        void run(std::stop_token stop,
+                 std::chrono::milliseconds period = std::chrono::milliseconds(10));
+
+        // Raise events here (thread-safe).
         [[nodiscard]]
-        aa::core::EventQueue & eventQueue() noexcept;
+        aa::core::EventFlags & events() noexcept;
 
+        // Safe to read from any thread.
         [[nodiscard]]
-        aa::core::State * currentState() noexcept;
+        aa::core::StateId state() const noexcept;
 
         [[nodiscard]]
         aa::services::IServices & services() noexcept;
 
-        [[nodiscard]]
-        aa::core::State & disconnectedState() noexcept override;
-
-        [[nodiscard]]
-        aa::core::State & startWifiState() noexcept override;
-
-        [[nodiscard]]
-        aa::core::State & waitingWifiState() noexcept override;
-
-        [[nodiscard]]
-        aa::core::State & startTransportState() noexcept override;
-
-        [[nodiscard]]
-        aa::core::State & waitingTransportState() noexcept override;
-
-        [[nodiscard]]
-        aa::core::State & startProtocolState() noexcept override;
-
-        [[nodiscard]]
-        aa::core::State & waitingProtocolState() noexcept override;
-
-        [[nodiscard]]
-        aa::core::State & startAuthenticationState() noexcept override;
-
-        [[nodiscard]]
-        aa::core::State & waitingAuthenticationState() noexcept override;
-
-        [[nodiscard]]
-        aa::core::State & startServicesState() noexcept override;
-
-        [[nodiscard]]
-        aa::core::State & waitingServicesState() noexcept override;
-
-        [[nodiscard]]
-        aa::core::State & runningState() noexcept override;
-
-        [[nodiscard]]
-        aa::core::State & recoveryState() noexcept override;
-
     private:
-        aa::drivers::linux::LinuxServices services_;
+        SessionContext context_;
 
-        DisconnectedState disconnected_;
-        StartWifiState startWifi_;
-        WaitingWifiState waitingWifi_;
-        StartTransportState startTransport_;
-        WaitingTransportState waitingTransport_;
-        StartProtocolState startProtocol_;
-        WaitingProtocolState waitingProtocol_;
-        StartAuthenticationState startAuthentication_;
-        WaitingAuthenticationState waitingAuthentication_;
-        StartServicesState startServices_;
-        WaitingServicesState waitingServices_;
-        RunningState running_;
-        RecoveryState recovery_;
+        aa::core::EventFlags events_;
 
-        aa::core::StateMachine machine_;
-
-        aa::core::EventQueue eventQueue_;
-        aa::core::EventDispatcher dispatcher_;
+        std::atomic<aa::core::StateId> state_{aa::core::StateId::Disconnected};
 };
 
 }

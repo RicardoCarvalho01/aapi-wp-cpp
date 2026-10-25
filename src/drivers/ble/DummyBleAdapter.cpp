@@ -1,13 +1,10 @@
 
 #include "drivers/ble/DummyBleAdapter.hpp"
 
-#include "core/events/BleConnectedEvent.hpp"
-#include "core/events/BleDisconnectedEvent.hpp"
-
 namespace aa::drivers::ble
 {
 
-DummyBleAdapter::DummyBleAdapter(aa::core::EventQueue& eventQueue) : BleAdapter(eventQueue)
+DummyBleAdapter::DummyBleAdapter(aa::core::EventFlags& events) noexcept : BleAdapter(events)
 {}
 
 bool DummyBleAdapter::initialize()
@@ -62,7 +59,7 @@ void DummyBleAdapter::simulateConnection()
     connected_ = true;
     advertising_ = false;
 
-    eventQueue_.push(aa::core::BleConnectedEvent{});
+    raise(aa::core::EventFlag::BleConnected);
 }
 
 void DummyBleAdapter::simulateDisconnection()
@@ -73,7 +70,7 @@ void DummyBleAdapter::simulateDisconnection()
     }
 
     connected_ = false;
-    eventQueue_.push(aa::core::BleDisconnectedEvent{});
+    raise(aa::core::EventFlag::BleDisconnected);
 }
 
 } // namespace aa::drivers::ble

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/events/EventQueue.hpp"
+#include "core/events/EventFlags.hpp"
 
 
 namespace aa::drivers::ble
@@ -9,7 +9,7 @@ namespace aa::drivers::ble
 class BleAdapter
 {
     public:
-        explicit BleAdapter(aa::core::EventQueue &eventQueue);
+        explicit BleAdapter(aa::core::EventFlags &events) noexcept;
 
         virtual ~BleAdapter() = default;
 
@@ -26,18 +26,18 @@ class BleAdapter
         virtual void stopAdvertising() = 0;
 
         /*
-         * Process pending BLE activity and enqueue corresponding
-         * application events.
+         * Process pending BLE activity and raise the corresponding
+         * event flags.
          *
-         * poll() is intentionally non-blocking. The application owns
-         * the main loop and decides how frequently this is called.
+         * poll() is intentionally non-blocking. The application decides
+         * how frequently this is called.
         */
         virtual void poll() = 0;
 
     protected:
-        void enqueue(aa::core::Event event);
+        void raise(aa::core::EventFlag flag) noexcept;
 
-        aa::core::EventQueue & eventQueue_;
+        aa::core::EventFlags & events_;
 };
 
 } // namespace aa::drivers::ble

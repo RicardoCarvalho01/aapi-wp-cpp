@@ -9,7 +9,7 @@ namespace aa::drivers::ble
 class DummyBleAdapter final : public BleAdapter
 {
     public:
-        explicit DummyBleAdapter(aa::core::EventQueue &eventQueue);
+        explicit DummyBleAdapter(aa::core::EventFlags &events) noexcept;
 
         bool initialize() override;
 
